@@ -1,239 +1,253 @@
-import camelot
-from datetime import date, timedelta
+import datetime
 import pandas as pd
 import numpy as np
 import os
-from datawrapper import Datawrapper
-import calendar
-import time
+import geopandas as gpd
 
 
-def add_chart_calculation():
- 
-  def get_ordinal_suffix(day: int) -> str:
-    return {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th') if day not in (11, 12, 13) else 'th'
-
-  HTML_STRING = """<b style="background-color: rgb(255, 191, 0); padding-left: 3px; padding-right: 3px ">"""
- 
-  
-  jpop = pd.read_csv('data/cook-jail-data.csv', parse_dates=['Date'])
-
-  pfa_start_date = '2023-09-17'
-  most_recent_date = jpop['Date'].max().strftime("%Y-%m-%d")
-
-  pfa_calc = jpop[jpop['Date'].isin([pfa_start_date, most_recent_date])]
-  pfa_diff = pfa_calc.diff().dropna()
-  up_or_down = np.where(pfa_diff['Jail Population'].values[0] < 0, 'down', 'up')
-  pfa_change = pfa_calc.set_index('Date').pct_change().dropna()
-
-  em_up_or_down = np.where(pfa_diff['Community Corrections'].values[0] < 0, 'down', 'up')
-
-  chart_calculation_string = f"<br>On {calendar.month_name[jpop['Date'].max().month]} {str(jpop['Date'].max().day) + get_ordinal_suffix(jpop['Date'].max().day)} the Cook County average daily jail population is {up_or_down} {HTML_STRING}{round(pfa_change['Jail Population'].values[0] * 100, 1 )}%</b> — a difference in ADP of {HTML_STRING}{pfa_diff['Jail Population'].values[0]}</b> since the implementation of the PFA on September 18th."
-
-  em_chart_calculation_string = f"<br>On {calendar.month_name[jpop['Date'].max().month]} {str(jpop['Date'].max().day) + get_ordinal_suffix(jpop['Date'].max().day)} the Cook County average daily electronic monitoring population is {em_up_or_down} {HTML_STRING}{round(pfa_change['Community Corrections'].values[0] * 100, 1 )}%</b> — a difference in individuals on EM of {HTML_STRING}{pfa_diff['Community Corrections'].values[0]}</b> since the implementation of the PFA on September 18th."
-
-  API_KEY = os.environ['DATAWRAPPER_API']
-  dw = Datawrapper(access_token=API_KEY)
-
-  #update jail
-  dw.update_description(chart_id='JoeoH', intro=chart_calculation_string)
-  time.sleep(2)
-  dw.publish_chart(chart_id='JoeoH')
-
-  #update em 
-  dw.update_description(chart_id='GlakD', intro=em_chart_calculation_string)
-  time.sleep(2)
-  dw.publish_chart(chart_id='GlakD')
-
-
-def get_backfill_dates():
-
-  """
-  This function runs each day. It generates a pandas series of dates in the past 30 days where the jail did not upload data on the same day when the pdf scraper ran.
-  """
-
-  bf_df = pd.read_csv('https://raw.githubusercontent.com/brandendupont-mcw/git_scrape_cook_jail/main/data/cook-jail-data.csv')
-
-  #convert date col to datetime  
-  bf_df['Date'] = pd.to_datetime(bf_df['Date'], errors='coerce')
-
-  #make sure the data is a date
-  assert bf_df['Date'].dtype.type == np.datetime64
-
-  #grab the last 30 days of the dataset
-  last_30 = bf_df.set_index('Date').last('30D')
-
-  #generate a backfill range  
-  backfill_range = pd.date_range(last_30.index.min(), last_30.index.max())
-
-  #return non intersect array of the two date lists
-  # AKA, all dates not stored in the pdf file
-  return pd.Series(np.setxor1d(last_30.index, backfill_range))
-
-
-def parse_append_pdf(pdf_day, pdf_month=None, pdf_year=None):
-
+def inc_data_read(start_year = 2018, full_dataset = True, convert_cook_crs = True):
+    
     """
-    A function to parse and append jail data.
+    Pulling in City of Chicago Incident data; returns pandas dataframe of incidents.
+    start_year: input starting year for requested data
+    full_dataset: choose to pull in full dataset or small subset of data
+    convert_cook_crs: choose to convert to local espg to match beat data or not 
     """
 
     
-    # import data
-    PAST_JAIL_DATA = pd.read_csv("data/cook-jail-data.csv")
-    FAILED_URL = pd.read_csv("data/failed_url.csv")
 
-  
-    today_yr = date.today().year
-    today_month =  date.today().month
+    if full_dataset == True:
+        print("Pulling full dataset")
+        limit = 20000000
+    else:
+        print("Small subset")
+        limit = 200
     
-    # run the scraper on a day lag
-    today_day =  pdf_day
-
-    # add leading zeros to single digit month and days to match the sherrif's pdf template
-    if pdf_month == None:
-        month = "{:02d}".format(today_month)
-    else:
-        month = "{:02d}".format(pdf_month)
-
-    if pdf_year == None:
-        year = "{:02d}".format(today_yr)
-    else:
-        year = "{:02d}".format(pdf_year)
+    # initialize datatime object
+    today = datetime.date.today()
+    
+    # getting current year
+    current_yr = today.year
+    # initialize a list
+    inc_df_list = []
+    
+    # for each year between 2018 and current year, pull in incident data    
+    for year in range(start_year, current_yr + 1):
+        inc_data_yr = pd.read_csv(
+            f'https://data.cityofchicago.org/resource/ijzp-q8t2.csv?$limit={limit}&$where=date%20between%20%27{year}-01-01T00:00:00%27%20and%20%27{year}-12-31T23:59:59%27', storage_options={'verify': False}
+        )
+        inc_df_list.append(inc_data_yr)
         
-    day = "{:02d}".format(today_day)
+    # concat lists of data from each list (dataframe of yearly arrests)
+    inc_df = pd.concat(inc_df_list, ignore_index=True)
 
-    #drop this later
-    today_month = "{:02d}".format(today_month)
+    # creating a geopandas dataframe from dataframe
+    geometry = gpd.points_from_xy(inc_df.longitude, inc_df.latitude, crs="EPSG:4326")
+    inc_gdf = gpd.GeoDataFrame(
+    inc_df, geometry=geometry 
+     )     
 
-    # create the templated pdf
-    pdf_url = f"https://www.cookcountysheriffil.gov/wp-content/uploads/{year}/{month}/CCSO_BIU_CommunicationsCCDOC_v1_{year}_{month}_{day}.pdf"
 
 
-    # parse the pdf
-    try:
-        #parse the pdf table
-        df = camelot.read_pdf(pdf_url)
-        pdf_date = str.replace(str(pdf_url).split(".")[-2].split("/")[-1].split("v1_")[-1], "_", "-")
+    # converting the espg to correct area for cook for beats and incidents to work together 
+    if convert_cook_crs == True: 
+        inc_gdf = inc_gdf.to_crs(epsg=26916) 
         
-        if len(df) == 1:
-            dfs = df[0].df
+  
+        print(inc_gdf.crs)
+        print(inc_gdf.shape)
 
-            dfs.to_csv(f'data/{pdf_date}-parsed-pdf-table.csv', index=False)
-
-            # replace any null values
-            dfs = dfs.replace('', np.nan)
-            # remove any completely null rows
-            dfs = dfs.dropna(axis=1, how='all')
-
-            # split any tables with the table in one row seperated by a /n character
-            if dfs.shape[1] < 2:
-                dfs[[0,1]] = dfs[0].str.split('\n', expand=True)
-                dfs = dfs.replace('', np.nan)
-                dfs = dfs.dropna(axis=1, how='all')
-
-            dfs[0] = dfs[0].str.strip().str.lower().str.replace(" ","-")
-
-            #subset to only include these values
-            dfs = dfs[dfs[0].isin(['total-male-and-female',
-                'jail-population', 'community-corrections'])]
-
-
-            dfs['Date'] = pdf_date
-
-            # make sure the dataframe is the correct size before appending
-            if dfs.shape == (3, 3):
-                
-                dfs[0] = dfs[0].str.strip().str.title().str.replace("-"," ")
-                #pivot data horizontally
-                pdf_table_final = dfs.pivot(index='Date', columns=0, values=1).reset_index()
-                
-                # remove any commas in the table
-                pdf_table_final[['Community Corrections', 'Jail Population',
-            'Total Male And Female']] = pdf_table_final[['Community Corrections', 'Jail Population',
-            'Total Male And Female']].apply(lambda x: x.str.replace(",",""))
-                
-                print(pdf_table_final.head())
-                
-                combine = pd.concat([PAST_JAIL_DATA, pdf_table_final])
-                
-                #ensure types are numeric
-                combine[['Jail Population', 'Community Corrections',
-            'Total Male And Female']].apply(lambda x: pd.to_numeric(x))
-                
-                # ensure dates are dates
-                combine['Date'] = pd.to_datetime(combine['Date'])
-
-                #deduplicate
-                combine = combine.groupby('Date').first().reset_index()
-
-                #overwrite and save data
-                combine.to_csv('data/cook-jail-data.csv', index=False)
-
-        else:
-            print("PDF Report Name: ", pdf_url, " had more than one table")
-            print("unsuccessful pdf table parse:",pdf_url)
-
-    except:
-        url_failed = True
-        print("unsuccessful:",pdf_url)
-        # save failed url if the pdf broke
-        if url_failed == True:
-
-            # add the failed dataset to pandas
-            FAILED_URL['failed_url'] = FAILED_URL['failed_url'].add(pdf_url)
-
-            #overwrite and save data
-            FAILED_URL.to_csv('data/failed_url.csv', index=False)
+        return inc_gdf
 
 
 
 
 if __name__ == "__main__":
 
-    today_day =  date.today().day
-    weekday = date.today().weekday()
-
-    backfill_dates = get_backfill_dates()
-
-    print("The number of backfill dates is: ", len(backfill_dates))
-
-    #on mondays parse pdfs that are updated on the weekend
-    if weekday == 0:
-
-        saturday = (date.today() - timedelta(days = 2)).day
-        sunday = (date.today() - timedelta(days = 1)).day
-
-        for pdf_day in [today_day, saturday, sunday]:
-            
-            parse_append_pdf(pdf_day=pdf_day)
-        
-        # perform any backfill pdf parsing 
-        if len(backfill_dates) > 0:
-        
-            for day in backfill_dates:
-
-                parse_append_pdf(pdf_day=day.day, pdf_month=day.month, pdf_year=day.year)
-
-        
-
-
-    # parse pdfs normally Tuesday-Friday
-    elif (weekday > 0) & ( weekday < 5):
-
-        parse_append_pdf(pdf_day=today_day)
-
     
-        # perform any backfill pdf parsing 
-        if len(backfill_dates) > 0:
-        
-            for day in backfill_dates:
+    # In[310]:
 
-                parse_append_pdf(pdf_day=day.day, pdf_month=day.month, pdf_year=day.year)
-              
 
-    #run chart update
-    print('chart is updating')
-    add_chart_calculation()
+    df = inc_data_read(start_year = 2018, full_dataset = True, convert_cook_crs = True)
+
+
+    # In[312]:
+
+
+    df.head()
+
+
+    # In[314]:
+
+
+    df['date'] = df['date'].astype(str)
+
+
+    # In[316]:
+
+
+    df['inc_data_read'] = pd.to_datetime(df['date'], errors='coerce')
+
+
+    # In[318]:
+
+
+    df['date'] = pd.to_datetime(df['date'])
+
+
+    # In[320]:
+
+
+    print(df['date'].head())
+
+
+    # In[322]:
+
+
+    print(df['date'].dtype)
+
+
+    # In[324]:
+
+
+    print(df['date'].unique())
+
+
+    # In[357]:
+
+
+    df['year'].unique()
+
+
+    # In[326]:
+
+
+    df['MONTH'] = df['date'].dt.month
+    df['DAY'] = df['date'].dt.day
+    df['YEAR'] = df['date'].dt.year
+
+
+    # In[363]:
+
+
+    df.columns
+
+
+    # In[328]:
+
+
+    df = df[(df['inc_data_read'] >= '2018-01-01') & (df['inc_data_read'] <= '2024-12-31')]
+
+
+    # In[330]:
+
+
+    lookup_path = "data/CPD offense lookup - Incidents.csv"
+    lookup = pd.read_csv(lookup_path)
+
+
+    # In[332]:
+
+
+    df = df.merge(lookup, left_on=['iucr'], right_on=['IUCR'], how='left')
+
+
+    # In[334]:
+
+
+    print(lookup.dtypes)
+
+
+    # In[336]:
+
+
+    df['Domestic'] = df['domestic'].astype(str)
+    df['DomesticSort'] = np.where(df['domestic'] == 'true', 1,
+                        np.where(df['domestic'] == 'false', 0, np.nan))
+    df['Domestic'] = df['domestic'].map({'true': 'DV Incident', 'false': 'Non-DV Incident'})
+
+
+    # In[338]:
+
+
+    domestic_keywords = ['Domestic Battery', 'Aggravated Domestic Battery']
+    df.loc[df['OffenseDescription'].isin(domestic_keywords), 'DomesticSort'] = 1
+    df.loc[df['OffenseDescription'].isin(domestic_keywords), 'Domestic'] = 'DV Incident'
+
+
+    # In[340]:
+
+
+    df['Arrest'] = df['arrest'].astype(str)
+    df['ArrestSort'] = df['arrest'].map({'true': 1, 'false': 0})
+    df['Arrest'] = df['arrest'].map({'true': 'arrest', 'false': 'No arrest'})
+
+
+    # In[342]:
+
+
+    def assign_police_district(beat):
+        if beat in [111,112,113,114,121,122,123,124,131,132,133]: return 1
+        elif beat in [211,212,213,214,215,221,222,223,224,225,231,232,233,234,235]: return 2
+        elif 311 <= beat <= 334: return 3
+        elif 411 <= beat <= 434: return 4
+        elif 511 <= beat <= 533: return 5
+        elif 611 <= beat <= 634: return 6
+        elif 711 <= beat <= 735: return 7
+        elif 811 <= beat <= 835: return 8
+        elif 911 <= beat <= 935: return 9
+        elif 1011 <= beat <= 1034: return 10
+        elif 1111 <= beat <= 1135: return 11
+        elif 1211 <= beat <= 1235: return 12
+        elif 1411 <= beat <= 1434: return 14
+        elif 1511 <= beat <= 1533: return 15
+        elif 1611 <= beat <= 1655: return 16
+        elif 1711 <= beat <= 1733: return 17
+        elif 1811 <= beat <= 1834: return 18
+        elif 1911 <= beat <= 1935: return 19
+        elif 2011 <= beat <= 2033: return 20
+        elif 2211 <= beat <= 2234: return 22
+        elif 2411 <= beat <= 2433: return 24
+        elif 2511 <= beat <= 2535: return 25
+        return np.nan
+
+
+    # In[344]:
+
+
+    df['PoliceDistrict'] = df['beat'].apply(lambda x: assign_police_district(int(x)) if pd.notnull(x) else np.nan)
+
+
+    # In[346]:
+
+
+    df['CaseSort'] = 1
+    df['Case'] = 'All Incidents'
+
+
+    # In[348]:
+
+
+    output_csv = "data/Incidents.csv"
+
+
+    # In[350]:
+
+
+    drop_cols = [
+        'id', 'case_number', 'date', 'block', 'primary_type', 'description', 'location_description', 'fbi_code',
+        'x_coordinate', 'y_coordinate', 'updated_on', 'latitude', 'longitude', 'location', 'MONTH', 'DAY'
+    ]
+    df.drop(columns=drop_cols, inplace=True)
+
+
+    # In[352]:
+
+
+    df.to_csv(output_csv, index=False, encoding='utf-8')
+
+
+
 
 
 

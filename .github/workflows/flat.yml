@@ -8,17 +8,11 @@ on:
       - .github/workflows/flat.yml
       - ./postprocess.ts
       
-env:
-  DATAWRAPPER_API: ${{ secrets.DATAWRAPPER_API }}
   
 jobs:
   scheduled:
     runs-on: ubuntu-latest
     steps:
-      - name: sudo update
-        run: sudo apt-get update
-      - name: Install Ghostscript
-        run: sudo apt install ghostscript python3-tk
       - name: Check out repo
         uses: actions/checkout@v2 
       - name: setup python
