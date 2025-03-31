@@ -1,2 +1,2 @@
-git lfs track "data/*.csv" "*.csv"
+git lfs track  "*.csv"
 
