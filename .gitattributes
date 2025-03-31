@@ -1,2 +1,2 @@
-git lfs track  "*.csv"
+git lfs track  "*incident.csv"
 *incident.csv filter=lfs diff=lfs merge=lfs -text
