@@ -228,7 +228,7 @@ if __name__ == "__main__":
     # In[348]:
 
 
-    output_csv = "data/Incidents.csv"
+    output_csv = "Incidents.csv"
 
 
     # In[350]:
