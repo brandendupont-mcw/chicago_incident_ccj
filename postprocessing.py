@@ -68,7 +68,7 @@ if __name__ == "__main__":
     # In[310]:
 
 
-    df = inc_data_read(start_year = 2018, full_dataset = False, convert_cook_crs = True)
+    df = inc_data_read(start_year = 2018, full_dataset = True, convert_cook_crs = True)
 
 
     # In[312]:
